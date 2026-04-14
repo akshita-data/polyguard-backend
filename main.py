@@ -161,24 +161,43 @@ INTERACTIONS = [
 async def analyze(file: UploadFile = File(...)):
     try:
         contents = await file.read()
+        filename = file.filename.lower()
 
-        # ✅ REAL OCR
-        image = Image.open(io.BytesIO(contents))
-        extracted_text = pytesseract.image_to_string(image)
+        extracted_text = ""
 
-        print("OCR TEXT:", extracted_text)
+        # TRY OCR (won’t crash if fails)
+        try:
+            image = Image.open(io.BytesIO(contents))
+            extracted_text = pytesseract.image_to_string(image)
+        except Exception as e:
+            print("OCR failed:", e)
 
-        # ✅ SMART DETECTION
+        # ALWAYS include filename
+        extracted_text += " " + filename
+
+        print("TEXT:", extracted_text)
+
         detected_drugs = extract_drugs_smart(extracted_text)
         detected_drugs += map_brands(extracted_text)
 
         detected_drugs = list(set(detected_drugs))
 
-        # 🔥 FALLBACK (ONLY IF NOTHING FOUND)
+        # ❌ NO FAKE FALLBACK
         if not detected_drugs:
-            detected_drugs = ["paracetamol"]
+            return {
+                "drugs": [],
+                "interactions": [],
+                "report": {
+                    "total_drugs": 0,
+                    "drugs_detected": [],
+                    "interaction_count": 0,
+                    "overall_risk": "UNKNOWN",
+                    "daily_schedule_hint": "No medicines detected",
+                    "final_advice": "Upload clearer image or enter manually"
+                }
+            }
 
-        # ✅ FIXED INTERACTIONS (TUPLE SAFE)
+        # INTERACTIONS
         interactions = []
 
         for i in range(len(detected_drugs)):
@@ -209,8 +228,8 @@ async def analyze(file: UploadFile = File(...)):
                 "drugs_detected": detected_drugs,
                 "interaction_count": len(interactions),
                 "overall_risk": "HIGH" if interactions else "LOW",
-                "daily_schedule_hint": "Follow doctor's prescription.",
-                "final_advice": "Consult doctor before combining medicines."
+                "daily_schedule_hint": "Follow doctor's prescription",
+                "final_advice": "Consult doctor before combining medicines"
             }
         }
 
@@ -218,15 +237,15 @@ async def analyze(file: UploadFile = File(...)):
         print("Analyze error:", e)
 
         return {
-            "drugs": ["paracetamol"],
+            "drugs": [],
             "interactions": [],
             "report": {
-                "total_drugs": 1,
-                "drugs_detected": ["paracetamol"],
+                "total_drugs": 0,
+                "drugs_detected": [],
                 "interaction_count": 0,
-                "overall_risk": "LOW",
-                "daily_schedule_hint": "Fallback mode active.",
-                "final_advice": "Consult doctor."
+                "overall_risk": "ERROR",
+                "daily_schedule_hint": "System error",
+                "final_advice": "Try again"
             }
         }
 # -----------------------------
