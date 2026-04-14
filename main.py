@@ -164,10 +164,9 @@ async def analyze(file: UploadFile = File(...)):
 
         # Try OCR (your existing function)
         extracted_text = ""
-        try:
-            extracted_text = extract_text_from_image(contents)
-        except Exception as e:
-            print("OCR failed:", e)
+        def extract_text_from_image(image):
+            return ""  # temporary fix        except Exception as e:
+        print("OCR failed:", e)
 
         # Simple detection logic
         detected_drugs = []
