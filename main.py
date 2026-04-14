@@ -160,31 +160,19 @@ INTERACTIONS = [
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
     try:
-        contents = await file.read()
         filename = file.filename.lower()
 
-        extracted_text = ""
+        print("Filename:", filename)
 
-        # ✅ TRY OCR (works locally, safe on Render)
-        try:
-            image = Image.open(io.BytesIO(contents))
-            extracted_text = pytesseract.image_to_string(image)
-            print("OCR TEXT:", extracted_text)
-        except Exception as e:
-            print("OCR failed:", e)
+        # 🔥 PURE TEXT BASED DETECTION (NO OCR)
+        text = filename
 
-        # ✅ ALWAYS INCLUDE FILENAME (CRITICAL)
-        extracted_text += " " + filename
-
-        text = extracted_text.lower()
-
-        # ✅ DETECTION (FULL LOGIC)
         detected_drugs = extract_drugs_smart(text)
         detected_drugs += map_brands(text)
 
         detected_drugs = list(set(detected_drugs))
 
-        # 🔥 SMART FALLBACK (REALISTIC — NOT FAKE)
+        # 🔥 SMART MATCH FROM WORDS
         if not detected_drugs:
             words = re.findall(r"[a-zA-Z]+", text)
 
@@ -195,7 +183,7 @@ async def analyze(file: UploadFile = File(...)):
 
         detected_drugs = list(set(detected_drugs))
 
-        # 🚨 FINAL SAFETY (BUT NOT FAKE)
+        # 🚨 STILL EMPTY → RETURN EMPTY (NO FAKE DATA)
         if not detected_drugs:
             return {
                 "drugs": [],
@@ -206,11 +194,11 @@ async def analyze(file: UploadFile = File(...)):
                     "interaction_count": 0,
                     "overall_risk": "UNKNOWN",
                     "daily_schedule_hint": "No medicines detected",
-                    "final_advice": "Upload clearer image"
+                    "final_advice": "Try another image"
                 }
             }
 
-        # ✅ INTERACTIONS (FIXED)
+        # ✅ INTERACTIONS
         interactions = []
 
         for i in range(len(detected_drugs)):
@@ -260,7 +248,8 @@ async def analyze(file: UploadFile = File(...)):
                 "daily_schedule_hint": "System error",
                 "final_advice": "Try again"
             }
-        }# -----------------------------
+        }
+# -----------------------------
 # /check → INTERACTION DETECTION
 # -----------------------------
 @app.post("/check")
