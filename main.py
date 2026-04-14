@@ -162,35 +162,44 @@ async def analyze(file: UploadFile = File(...)):
     try:
         contents = await file.read()
 
-        # Try OCR (your existing function)
-        extracted_text = ""
-        def extract_text_from_image(image):
-            return ""  # temporary fix        except Exception as e:
-        print("OCR failed:", e)
+        # ✅ REAL OCR
+        image = Image.open(io.BytesIO(contents))
+        extracted_text = pytesseract.image_to_string(image)
 
-        # Simple detection logic
-        detected_drugs = []
-        text_lower = extracted_text.lower()
+        print("OCR TEXT:", extracted_text)
 
-        for drug in KNOWN_DRUGS:
-            if drug in text_lower:
-                detected_drugs.append(drug)
+        # ✅ SMART DETECTION
+        detected_drugs = extract_drugs_smart(extracted_text)
+        detected_drugs += map_brands(extracted_text)
 
-        # 🔥 FALLBACK (CRITICAL)
+        detected_drugs = list(set(detected_drugs))
+
+        # 🔥 FALLBACK (ONLY IF NOTHING FOUND)
         if not detected_drugs:
-            detected_drugs = ["paracetamol", "ibuprofen"]
+            detected_drugs = ["paracetamol"]
 
-        # Run interaction check
+        # ✅ FIXED INTERACTIONS (TUPLE SAFE)
         interactions = []
-        for d1 in detected_drugs:
-            for d2 in detected_drugs:
-                if d1 != d2:
-                    for item in INTERACTIONS:
-                        if (
-                            (item["drug1"] == d1 and item["drug2"] == d2)
-                            or (item["drug1"] == d2 and item["drug2"] == d1)
-                        ):
-                            interactions.append(item)
+
+        for i in range(len(detected_drugs)):
+            for j in range(i + 1, len(detected_drugs)):
+                d1 = detected_drugs[i]
+                d2 = detected_drugs[j]
+
+                for item in INTERACTIONS:
+                    drug1, drug2, severity, effect = item
+
+                    if (
+                        (d1 == drug1 and d2 == drug2) or
+                        (d1 == drug2 and d2 == drug1)
+                    ):
+                        interactions.append({
+                            "drug1": d1,
+                            "drug2": d2,
+                            "severity": severity,
+                            "effect": effect,
+                            "message": f"{d1} + {d2}: {effect}"
+                        })
 
         return {
             "drugs": detected_drugs,
@@ -207,6 +216,7 @@ async def analyze(file: UploadFile = File(...)):
 
     except Exception as e:
         print("Analyze error:", e)
+
         return {
             "drugs": ["paracetamol"],
             "interactions": [],
@@ -219,12 +229,6 @@ async def analyze(file: UploadFile = File(...)):
                 "final_advice": "Consult doctor."
             }
         }
-
-
-
-
-
-
 # -----------------------------
 # /check → INTERACTION DETECTION
 # -----------------------------
