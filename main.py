@@ -160,19 +160,30 @@ INTERACTIONS = [
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
     try:
+        contents = await file.read()
         filename = file.filename.lower()
 
-        print("Filename:", filename)
+        extracted_text = ""
 
-        # 🔥 PURE TEXT BASED DETECTION (NO OCR)
-        text = filename
+        # ✅ TRY OCR (works locally, safe if fails)
+        try:
+            image = Image.open(io.BytesIO(contents))
+            extracted_text = pytesseract.image_to_string(image).lower()
+        except Exception as e:
+            print("OCR failed:", e)
 
+        # 🔥 CRITICAL: ALWAYS USE FILENAME + OCR
+        text = extracted_text + " " + filename
+
+        print("TEXT USED:", text)
+
+        # ✅ USE YOUR FULL MODEL
         detected_drugs = extract_drugs_smart(text)
         detected_drugs += map_brands(text)
 
         detected_drugs = list(set(detected_drugs))
 
-        # 🔥 SMART MATCH FROM WORDS
+        # 🔥 IMPROVED FALLBACK USING YOUR OWN DRUG LIST
         if not detected_drugs:
             words = re.findall(r"[a-zA-Z]+", text)
 
@@ -183,7 +194,7 @@ async def analyze(file: UploadFile = File(...)):
 
         detected_drugs = list(set(detected_drugs))
 
-        # 🚨 STILL EMPTY → RETURN EMPTY (NO FAKE DATA)
+        # 🚨 STILL NOTHING → HONEST RESPONSE (NO FAKE DATA)
         if not detected_drugs:
             return {
                 "drugs": [],
@@ -194,11 +205,11 @@ async def analyze(file: UploadFile = File(...)):
                     "interaction_count": 0,
                     "overall_risk": "UNKNOWN",
                     "daily_schedule_hint": "No medicines detected",
-                    "final_advice": "Try another image"
+                    "final_advice": "Try clearer image"
                 }
             }
 
-        # ✅ INTERACTIONS
+        # ✅ FULL INTERACTION ENGINE
         interactions = []
 
         for i in range(len(detected_drugs)):
