@@ -14,6 +14,14 @@ app = FastAPI()
 class DrugRequest(BaseModel):
     drugs: List[str]
 
+from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.get("/")
+def home():
+    return {"message": "PolyGuard Backend is Running 🚀"}
+
 from fastapi.middleware.cors import CORSMiddleware
 
 app.add_middleware(
@@ -302,6 +310,51 @@ def check(request: DrugRequest = Body(...)):
     })
 
     return {"interactions": results}
+
+
+@app.post("/check-interactions")
+def check_interactions(req: DrugRequest):
+    drugs = [d.lower() for d in req.drugs]
+
+    found = []
+    report = {
+        "total_drugs": len(drugs),
+        "interactions": [],
+        "risk_level": "low"
+    }
+
+    highest_risk = "low"
+
+    for d1 in drugs:
+        for d2 in drugs:
+            if d1 == d2:
+                continue
+
+            for a, b, severity, message in INTERACTIONS:
+                if (d1 == a and d2 == b) or (d1 == b and d2 == a):
+                    interaction = {
+                        "drug1": d1,
+                        "drug2": d2,
+                        "severity": severity,
+                        "message": message
+                    }
+                    if interaction not in found:
+                        found.append(interaction)
+
+                    # track highest risk
+                    if severity == "high":
+                        highest_risk = "high"
+                    elif severity == "medium" and highest_risk != "high":
+                        highest_risk = "medium"
+
+    report["interactions"] = found
+    report["risk_level"] = highest_risk
+
+    return {
+        "drugs": drugs,
+        "interactions": found,
+        "report": report
+    }
 
 # -----------------------------
 # /report → SIMPLE PLACEHOLDER
