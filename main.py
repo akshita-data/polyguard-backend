@@ -177,40 +177,44 @@ INTERACTIONS = [
 async def analyze(file: UploadFile = File(...)):
     try:
         contents = await file.read()
-        filename = file.filename.lower()
 
         extracted_text = ""
 
-        # ✅ TRY OCR (works locally, safe if fails)
+        # ✅ STEP 1: OCR with preprocessing
         try:
-            image = Image.open(io.BytesIO(contents))
-            extracted_text = pytesseract.image_to_string(image).lower()
+            image = Image.open(io.BytesIO(contents)).convert("RGB")
+
+            # 🔥 Improve OCR quality
+            gray = image.convert("L")  # grayscale
+            extracted_text = pytesseract.image_to_string(gray).lower()
+
         except Exception as e:
             print("OCR failed:", e)
 
-        # 🔥 CRITICAL: ALWAYS USE FILENAME + OCR
-        text = extracted_text + " " + filename
+        print("OCR TEXT:", extracted_text)
 
-        print("TEXT USED:", text)
+        # ❌ REMOVE filename dependency completely
+        text = extracted_text
 
-        # ✅ USE YOUR FULL MODEL
+        # ✅ STEP 2: Detect drugs (primary)
         detected_drugs = extract_drugs_smart(text)
         detected_drugs += map_brands(text)
 
-        detected_drugs = list(set(detected_drugs))
+        # Normalize + dedupe
+        detected_drugs = list(set([d.lower() for d in detected_drugs]))
 
-        # 🔥 IMPROVED FALLBACK USING YOUR OWN DRUG LIST
-        if not detected_drugs:
-            words = re.findall(r"[a-zA-Z]+", text)
+        # ✅ STEP 3: Strong fallback (word-level fuzzy match)
+        if not detected_drugs and text:
+            words = re.findall(r"[a-zA-Z]{4,}", text)  # ignore tiny junk
 
             for word in words:
-                match = get_close_matches(word, KNOWN_DRUGS, n=1, cutoff=0.6)
+                match = get_close_matches(word, KNOWN_DRUGS, n=1, cutoff=0.7)
                 if match:
                     detected_drugs.append(match[0])
 
         detected_drugs = list(set(detected_drugs))
 
-        # 🚨 STILL NOTHING → HONEST RESPONSE (NO FAKE DATA)
+        # 🚨 STEP 4: Nothing detected
         if not detected_drugs:
             return {
                 "drugs": [],
@@ -221,21 +225,20 @@ async def analyze(file: UploadFile = File(...)):
                     "interaction_count": 0,
                     "overall_risk": "UNKNOWN",
                     "daily_schedule_hint": "No medicines detected",
-                    "final_advice": "Try clearer image"
+                    "final_advice": "Try clearer image (better lighting, focus)"
                 }
             }
 
-        # ✅ FULL INTERACTION ENGINE
+        # ✅ STEP 5: Interaction engine
         interactions = []
+        risk = "low"
 
         for i in range(len(detected_drugs)):
             for j in range(i + 1, len(detected_drugs)):
                 d1 = detected_drugs[i]
                 d2 = detected_drugs[j]
 
-                for item in INTERACTIONS:
-                    drug1, drug2, severity, effect = item
-
+                for drug1, drug2, severity, effect in INTERACTIONS:
                     if (
                         (d1 == drug1 and d2 == drug2) or
                         (d1 == drug2 and d2 == drug1)
@@ -248,6 +251,13 @@ async def analyze(file: UploadFile = File(...)):
                             "message": f"{d1} + {d2}: {effect}"
                         })
 
+                        # track highest risk
+                        if severity == "high":
+                            risk = "high"
+                        elif severity == "medium" and risk != "high":
+                            risk = "medium"
+
+        # ✅ STEP 6: Final response
         return {
             "drugs": detected_drugs,
             "interactions": interactions,
@@ -255,9 +265,9 @@ async def analyze(file: UploadFile = File(...)):
                 "total_drugs": len(detected_drugs),
                 "drugs_detected": detected_drugs,
                 "interaction_count": len(interactions),
-                "overall_risk": "HIGH" if interactions else "LOW",
+                "overall_risk": risk.upper(),
                 "daily_schedule_hint": "Follow doctor's prescription",
-                "final_advice": "Consult doctor"
+                "final_advice": "Consult doctor if risk is moderate or high"
             }
         }
 
