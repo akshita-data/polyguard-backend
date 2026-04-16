@@ -2,11 +2,10 @@ from fastapi import FastAPI, UploadFile, File, Body
 from pydantic import BaseModel
 from typing import List
 from PIL import Image
-import pytesseract
 import io
 import re
 from difflib import get_close_matches
-
+pytesseract = None
 
 
 app = FastAPI()
@@ -184,7 +183,11 @@ async def analyze(file: UploadFile = File(...)):
         # ✅ TRY OCR (works locally, safe if fails)
         try:
             image = Image.open(io.BytesIO(contents))
-            extracted_text = pytesseract.image_to_string(image).lower()
+            extracted_text = ""
+        except Exception as e:
+            print("OCR skipped:", e)
+            extracted_text = ""
+            
         except Exception as e:
             print("OCR failed:", e)
 
