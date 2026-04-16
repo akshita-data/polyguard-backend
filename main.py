@@ -1,28 +1,28 @@
-from fastapi import FastAPI, UploadFile, File, Body
+"""
+PolyGuard Backend — main.py
+Clean, production-ready FastAPI backend.
+
+Endpoints:
+  GET  /            health check
+  POST /analyze     image → detected drugs ONLY
+  POST /check       drug list → interactions + rich report
+"""
+
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 from PIL import Image
 import pytesseract
 import io
 import re
 from difflib import get_close_matches
 
+# ─────────────────────────────────────────────────────────────
+# APP SETUP
+# ─────────────────────────────────────────────────────────────
 
-
-app = FastAPI()
-
-class DrugRequest(BaseModel):
-    drugs: List[str]
-
-from fastapi import FastAPI
-
-app = FastAPI()
-
-@app.get("/")
-def home():
-    return {"message": "PolyGuard Backend is Running 🚀"}
-
-from fastapi.middleware.cors import CORSMiddleware
+app = FastAPI(title="PolyGuard API", version="3.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -31,442 +31,487 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# -----------------------------
-# KNOWN DRUG LIST (CONTROL OUTPUT)
-# -----------------------------
-KNOWN_DRUGS = [
-    # Common
-    "paracetamol", "ibuprofen", "aspirin", "warfarin", "metformin",
 
-    # From your strips
-    "diclofenac", "nimesulide", "pantoprazole",
-    "levocetirizine", "doxofylline",
+# ─────────────────────────────────────────────────────────────
+# SCHEMAS
+# ─────────────────────────────────────────────────────────────
+
+class DrugListRequest(BaseModel):
+    drugs: List[str]
+
+# ─────────────────────────────────────────────────────────────
+# KNOWN DRUG DATABASE
+# ─────────────────────────────────────────────────────────────
+
+KNOWN_DRUGS = [
+    # Painkillers / Antipyretics
+    "paracetamol", "ibuprofen", "aspirin", "diclofenac", "nimesulide",
+    "naproxen", "tramadol", "codeine", "morphine",
 
     # Antibiotics
-    "amoxicillin", "clavulanic", "clarithromycin", "ofloxacin", "ornidazole",
+    "amoxicillin", "clavulanic", "clarithromycin", "ofloxacin",
+    "ornidazole", "metronidazole", "azithromycin", "doxycycline",
+    "ciprofloxacin", "cetirizine",
 
-    # Syrup components
-    "ambroxol", "chlorpheniramine", "dextromethorphan", "phenylephrine", "menthol",
+    # Gastro
+    "pantoprazole", "omeprazole", "ranitidine", "domperidone",
 
-    # Context drugs
-    "alcohol", "vitamin k", "steroids", "clopidogrel", "antibiotics"
+    # Antihistamines / Respiratory
+    "levocetirizine", "cetirizine", "doxofylline", "salbutamol",
+    "montelukast", "dextromethorphan", "ambroxol", "chlorpheniramine",
+    "phenylephrine", "menthol",
+
+    # Diabetes
+    "metformin", "insulin", "glipizide", "gliclazide",
+
+    # Cardiovascular
+    "warfarin", "aspirin", "clopidogrel", "atorvastatin", "amlodipine",
+    "losartan", "lisinopril", "metoprolol", "digoxin", "furosemide",
+    "spironolactone",
+
+    # Hormones / Thyroid
+    "levothyroxine",
+
+    # Others
+    "alcohol", "vitamin k", "steroids", "antidepressants",
 ]
 
-# -----------------------------
-# BRAND → GENERIC MAPPING
-# -----------------------------
+# ─────────────────────────────────────────────────────────────
+# BRAND → GENERIC MAP
+# ─────────────────────────────────────────────────────────────
+
 BRAND_MAP = {
-    "dolo": "paracetamol",
-    "calpol": "paracetamol",
-    "nomo": "paracetamol",
-    "nomo p": "paracetamol",
-    "livrin": "levocetirizine",
-    "levocet": "levocetirizine",
-    "a moxy": "amoxicillin",
-    "amox": "amoxicillin",
-    "olt": "pantoprazole",
-    "fenak": "diclofenac",
-    "gesic": "diclofenac",
+    # Paracetamol brands
+    "dolo": "paracetamol", "calpol": "paracetamol",
+    "nomo": "paracetamol", "crocin": "paracetamol",
+    "pyrigesic": "paracetamol", "metacin": "paracetamol",
+
+    # NSAIDs
+    "fenak": "diclofenac", "voveran": "diclofenac",
+    "brufen": "ibuprofen", "advil": "ibuprofen",
+
+    # Antibiotics
+    "amox": "amoxicillin", "novamox": "amoxicillin",
+    "zithromax": "azithromycin", "azee": "azithromycin",
+
+    # Antacids
+    "pan": "pantoprazole", "pantop": "pantoprazole",
+    "rantac": "ranitidine",
+
+    # Antihistamines
+    "levocet": "levocetirizine", "livrin": "levocetirizine",
+    "alerid": "cetirizine", "zyrtec": "cetirizine",
+
+    # Cholesterol
+    "lipitor": "atorvastatin", "storvas": "atorvastatin",
+
+    # BP
+    "nifedipine": "amlodipine",
+
+    # Cough/Cold
     "alencuf": "dextromethorphan",
 }
 
-# -----------------------------
-# SMART DRUG DETECTION
-# -----------------------------
-def extract_drugs_smart(text):
-    text = text.lower()
-    detected = []
-
-    words = re.findall(r"[a-zA-Z]+", text)
-
-    for drug in KNOWN_DRUGS:
-        if drug in text:
-            detected.append(drug)
-            continue
-
-        for word in words:
-            match = get_close_matches(word, [drug], n=1, cutoff=0.7)
-            if match:
-                detected.append(drug)
-                break
-
-    return list(set(detected))
-
-
-def map_brands(text):
-    text = text.lower()
-    mapped = []
-
-    for brand, generic in BRAND_MAP.items():
-        if brand in text:
-            mapped.append(generic)
-
-    return mapped
-
-
-
+# ─────────────────────────────────────────────────────────────
+# INTERACTION DATABASE
+# (drug1, drug2, severity, effect, recommendation)
+# ─────────────────────────────────────────────────────────────
 
 INTERACTIONS = [
-    #  BLOOD THINNER + PAINKILLERS
-    ("warfarin", "aspirin", "high", "Severe bleeding risk"),
-    ("warfarin", "ibuprofen", "high", "High bleeding risk"),
-    ("aspirin", "ibuprofen", "medium", "Stomach bleeding risk"),
+    # ── HIGH RISK ──────────────────────────────────────────
+    ("warfarin",      "aspirin",        "high",
+     "Severe internal bleeding risk — both thin the blood via different mechanisms",
+     "Avoid combination. Use only under strict medical supervision with regular INR monitoring."),
 
-    #  NSAID COMBINATIONS
-    ("diclofenac", "ibuprofen", "high", "High risk of stomach ulcers and bleeding"),
-    ("diclofenac", "nimesulide", "high", "Very high bleeding and liver risk"),
-    ("nimesulide", "paracetamol", "high", "Severe liver damage risk"),
+    ("warfarin",      "ibuprofen",      "high",
+     "Ibuprofen raises warfarin blood levels, causing dangerous bleeding",
+     "Use paracetamol for pain instead. Never self-medicate if on warfarin."),
 
-    #  ALCOHOL INTERACTIONS
-    ("paracetamol", "alcohol", "high", "Severe liver damage"),
-    ("diclofenac", "alcohol", "high", "Stomach bleeding risk"),
-    ("metformin", "alcohol", "high", "Lactic acidosis (life-threatening)"),
+    ("warfarin",      "diclofenac",     "high",
+     "Diclofenac increases anticoagulant effect of warfarin — bleeding risk",
+     "Avoid NSAIDs entirely while on warfarin. Consult doctor urgently."),
 
-    # ANTIBIOTICS
-    ("amoxicillin", "oral contraceptives", "medium", "Reduces birth control effectiveness"),
-    ("clarithromycin", "statins", "high", "Muscle breakdown risk"),
-    ("ofloxacin", "antibiotics", "medium", "Resistance risk"),
+    ("aspirin",       "clopidogrel",    "high",
+     "Double antiplatelet effect — major GI and cerebral bleeding risk",
+     "Only combine if explicitly prescribed for dual antiplatelet therapy. Monitor closely."),
 
-    # BP + HEART
-    ("lisinopril", "potassium", "high", "Dangerous potassium levels"),
-    ("digoxin", "furosemide", "high", "Irregular heart rhythm risk"),
+    ("diclofenac",    "ibuprofen",      "high",
+     "Two NSAIDs together — extreme stomach ulcer and kidney damage risk",
+     "Never take two NSAIDs simultaneously. Use only one at a time."),
 
-    #  DIABETES
-    ("insulin", "beta blockers", "medium", "Masks low sugar symptoms"),
+    ("diclofenac",    "nimesulide",     "high",
+     "Both NSAIDs — compounded liver toxicity and GI bleeding",
+     "Do not combine. Serious hepatotoxicity reported in India. Consult doctor."),
 
-    #  PAIN + STEROIDS
-    ("ibuprofen", "steroids", "high", "Severe stomach ulcers"),
+    ("nimesulide",    "paracetamol",    "high",
+     "Severe liver damage risk — both metabolized in liver",
+     "Avoid combination. Use one analgesic at a time."),
 
-    #  BLOOD THINNER CONTROL
-    ("warfarin", "vitamin k", "medium", "Reduces effectiveness"),
+    ("paracetamol",   "alcohol",        "high",
+     "Even moderate alcohol with paracetamol causes acute liver failure",
+     "Strictly avoid alcohol during paracetamol use. Fatal at high doses."),
 
-    #  BRAIN / NERVOUS SYSTEM
-    ("antidepressants", "tramadol", "high", "Serotonin syndrome"),
-    ("dextromethorphan", "antidepressants", "high", "Serotonin syndrome"),
+    ("diclofenac",    "alcohol",        "high",
+     "Alcohol amplifies diclofenac's stomach-lining damage — bleeding ulcers",
+     "Avoid alcohol entirely when taking diclofenac."),
 
-    #  COLD / COUGH COMBO RISKS
-    ("phenylephrine", "hypertension drugs", "medium", "Increases blood pressure"),
+    ("metformin",     "alcohol",        "high",
+     "Lactic acidosis — life-threatening buildup of lactic acid in blood",
+     "Absolutely avoid alcohol with metformin. Can be fatal."),
 
-    #  ANTIPLATELET
-    ("aspirin", "clopidogrel", "high", "Severe bleeding risk"),
+    ("clarithromycin","atorvastatin",   "high",
+     "Clarithromycin blocks statin metabolism → severe muscle breakdown (rhabdomyolysis)",
+     "Stop atorvastatin during clarithromycin course. Resume after antibiotic is finished."),
 
-    # LIVER / COMBO DRUGS
-    ("paracetamol", "diclofenac", "medium", "Liver stress risk"),
+    ("ibuprofen",     "steroids",       "high",
+     "Both damage stomach lining — risk of perforated ulcer",
+     "Use paracetamol instead of ibuprofen if on steroids. Add stomach protection."),
 
-    # generally safe
-    ("amoxicillin", "paracetamol", "low", "Generally safe but monitor usage"),
-    ("levocetirizine", "alcohol", "medium", "Increased drowsiness"),
-    ("pantoprazole", "antibiotics", "low", "May affect absorption"),
-    ("levocetirizine", "paracetamol", "low", "Generally safe combination"),
-    ("amoxicillin", "paracetamol", "low", "Commonly prescribed together"),
-    ("pantoprazole", "paracetamol", "low", "Safe, often used together"),
-    ("levocetirizine", "pantoprazole", "low", "No major interaction"),
-    ("doxofylline", "paracetamol", "low", "Generally safe"),
-    ("amoxicillin", "levocetirizine", "low", "Commonly used for infections and allergies"),
-    ("diclofenac", "paracetamol", "medium", "Monitor liver usage"),
-    ("paracetamol", "ofloxacin", "low", "Generally safe"),
-    ("clarithromycin", "paracetamol", "low", "Safe combination"),
-    ("ornidazole", "ofloxacin", "medium", "Combined antibiotic usage"),
+    ("lisinopril",    "spironolactone", "high",
+     "Both raise potassium — can cause fatal hyperkalemia and cardiac arrest",
+     "Requires close electrolyte monitoring. Only with doctor supervision."),
+
+    ("digoxin",       "furosemide",     "high",
+     "Furosemide depletes potassium → potassium loss increases digoxin toxicity",
+     "Monitor potassium and digoxin levels closely. Report any palpitations."),
+
+    ("dextromethorphan","antidepressants","high",
+     "Serotonin syndrome — life-threatening overstimulation of serotonin receptors",
+     "Do not combine. Use a non-serotonergic cough suppressant instead."),
+
+    ("tramadol",      "antidepressants","high",
+     "Serotonin syndrome risk — tremors, agitation, rapid heart rate",
+     "Avoid tramadol if on SSRIs/SNRIs. Discuss alternative pain relief with doctor."),
+
+    # ── MEDIUM RISK ────────────────────────────────────────
+    ("aspirin",       "ibuprofen",      "medium",
+     "Ibuprofen blocks aspirin's heart-protective effect — reduces cardioprotection",
+     "Take aspirin 30 min before ibuprofen, or use paracetamol for pain."),
+
+    ("warfarin",      "vitamin k",      "medium",
+     "Vitamin K reduces warfarin's blood-thinning effect",
+     "Keep vitamin K intake consistent. Sudden changes in leafy vegetables affect INR."),
+
+    ("paracetamol",   "diclofenac",     "medium",
+     "Additive liver load — use cautiously, especially with existing liver conditions",
+     "Short-term use is generally acceptable. Avoid in liver disease. Monitor."),
+
+    ("levocetirizine","alcohol",        "medium",
+     "Increased drowsiness and impaired coordination",
+     "Avoid alcohol while taking antihistamines. Do not drive."),
+
+    ("ornidazole",    "ofloxacin",      "medium",
+     "Both affect gut flora — risk of antibiotic-associated diarrhea",
+     "Take probiotics after the course. Monitor for persistent diarrhea."),
+
+    ("phenylephrine", "metoprolol",     "medium",
+     "Phenylephrine (decongestant) raises BP, counteracting beta-blocker effect",
+     "Use saline nasal drops instead. Avoid OTC decongestants if on beta-blockers."),
+
+    ("insulin",       "metoprolol",     "medium",
+     "Beta-blocker masks hypoglycemia symptoms (racing heart hidden)",
+     "Monitor blood sugar more frequently. Recognize sweating as the main warning sign."),
+
+    ("amoxicillin",   "metformin",      "medium",
+     "Antibiotics can alter gut flora affecting metformin absorption slightly",
+     "Monitor blood sugar during antibiotic course. Usually manageable."),
+
+    ("ofloxacin",     "antidepressants","medium",
+     "Quinolones may lower seizure threshold, risk increased with some antidepressants",
+     "Use with caution. Report any unusual neurological symptoms immediately."),
+
+    # ── LOW RISK ───────────────────────────────────────────
+    ("amoxicillin",   "paracetamol",    "low",
+     "Generally safe — commonly prescribed together for infections with pain/fever",
+     "Safe to use together as prescribed. No special precautions needed."),
+
+    ("levocetirizine","paracetamol",    "low",
+     "No significant interaction — commonly combined for cold and allergy",
+     "Safe combination. Take both as directed."),
+
+    ("levocetirizine","pantoprazole",   "low",
+     "No major interaction known",
+     "Can be taken together. Follow prescription timing."),
+
+    ("pantoprazole",  "paracetamol",    "low",
+     "Pantoprazole protects stomach — actually beneficial with paracetamol",
+     "Safe and often beneficial together."),
+
+    ("doxofylline",   "paracetamol",    "low",
+     "No significant interaction — both commonly prescribed for respiratory infections",
+     "Safe to use together."),
+
+    ("amoxicillin",   "levocetirizine", "low",
+     "No significant interaction — commonly combined for respiratory infections",
+     "Safe combination. Complete full antibiotic course."),
+
+    ("pantoprazole",  "ofloxacin",      "low",
+     "Pantoprazole may slightly reduce ofloxacin absorption if taken simultaneously",
+     "Take ofloxacin 2 hours before pantoprazole for best absorption."),
+
+    ("clarithromycin","paracetamol",    "low",
+     "No significant interaction",
+     "Safe to use together."),
+
+    ("diclofenac",    "pantoprazole",   "low",
+     "Pantoprazole protects the stomach from diclofenac's ulcer-causing effect",
+     "Beneficial combination — pantoprazole reduces GI risk of diclofenac."),
+
+    ("paracetamol",   "ofloxacin",      "low",
+     "No significant interaction",
+     "Safe to use together as prescribed."),
 ]
 
+# ─────────────────────────────────────────────────────────────
+# HELPER FUNCTIONS
+# ─────────────────────────────────────────────────────────────
 
-# -----------------------------
-# FINAL ANALYZE ENDPOINT
-# -----------------------------
-@app.post("/analyze")
-async def analyze(file: UploadFile = File(...)):
-    try:
-        contents = await file.read()
+def normalize_drug(name: str) -> str:
+    """Lowercase and strip whitespace."""
+    return name.strip().lower()
 
-        extracted_text = ""
 
-        # ✅ STEP 1: OCR with preprocessing
-        try:
-            image = Image.open(io.BytesIO(contents)).convert("RGB")
+def extract_drugs_from_text(text: str) -> List[str]:
+    """Multi-strategy drug detection from OCR text."""
+    text = text.lower()
+    detected = set()
 
-            # 🔥 Improve OCR quality
-            gray = image.convert("L")  # grayscale
-            extracted_text = pytesseract.image_to_string(gray).lower()
+    # Strategy 1: Direct substring match
+    for drug in KNOWN_DRUGS:
+        if drug in text:
+            detected.add(drug)
 
-        except Exception as e:
-            print("OCR failed:", e)
+    # Strategy 2: Brand name lookup
+    for brand, generic in BRAND_MAP.items():
+        if brand in text:
+            detected.add(generic)
 
-        print("OCR TEXT:", extracted_text)
+    # Strategy 3: Fuzzy word-level match (only if needed)
+    words = re.findall(r"[a-zA-Z]{4,}", text)
+    for word in words:
+        match = get_close_matches(word, KNOWN_DRUGS, n=1, cutoff=0.75)
+        if match:
+            detected.add(match[0])
 
-        # ❌ REMOVE filename dependency completely
-        text = extracted_text
+    return list(detected)
 
-        # ✅ STEP 2: Detect drugs (primary)
-        detected_drugs = extract_drugs_smart(text)
-        detected_drugs += map_brands(text)
 
-        # Normalize + dedupe
-        detected_drugs = list(set([d.lower() for d in detected_drugs]))
-
-        # ✅ STEP 3: Strong fallback (word-level fuzzy match)
-        if not detected_drugs and text:
-            words = re.findall(r"[a-zA-Z]{4,}", text)  # ignore tiny junk
-
-            for word in words:
-                match = get_close_matches(word, KNOWN_DRUGS, n=1, cutoff=0.7)
-                if match:
-                    detected_drugs.append(match[0])
-
-        detected_drugs = list(set(detected_drugs))
-
-        # 🚨 STEP 4: Nothing detected
-        if not detected_drugs:
-            return {
-                "drugs": [],
-                "interactions": [],
-                "report": {
-                    "total_drugs": 0,
-                    "drugs_detected": [],
-                    "interaction_count": 0,
-                    "overall_risk": "UNKNOWN",
-                    "daily_schedule_hint": "No medicines detected",
-                    "final_advice": "Try clearer image (better lighting, focus)"
-                }
-            }
-
-        # ✅ STEP 5: Interaction engine
-        interactions = []
-        risk = "low"
-
-        for i in range(len(detected_drugs)):
-            for j in range(i + 1, len(detected_drugs)):
-                d1 = detected_drugs[i]
-                d2 = detected_drugs[j]
-
-                for drug1, drug2, severity, effect in INTERACTIONS:
-                    if (
-                        (d1 == drug1 and d2 == drug2) or
-                        (d1 == drug2 and d2 == drug1)
-                    ):
-                        interactions.append({
-                            "drug1": d1,
-                            "drug2": d2,
-                            "severity": severity,
-                            "effect": effect,
-                            "message": f"{d1} + {d2}: {effect}"
-                        })
-
-                        # track highest risk
-                        if severity == "high":
-                            risk = "high"
-                        elif severity == "medium" and risk != "high":
-                            risk = "medium"
-
-        # ✅ STEP 6: Final response
-        return {
-            "drugs": detected_drugs,
-            "interactions": interactions,
-            "report": {
-                "total_drugs": len(detected_drugs),
-                "drugs_detected": detected_drugs,
-                "interaction_count": len(interactions),
-                "overall_risk": risk.upper(),
-                "daily_schedule_hint": "Follow doctor's prescription",
-                "final_advice": "Consult doctor if risk is moderate or high"
-            }
-        }
-
-    except Exception as e:
-        print("Analyze error:", e)
-
-        return {
-            "drugs": [],
-            "interactions": [],
-            "report": {
-                "total_drugs": 0,
-                "drugs_detected": [],
-                "interaction_count": 0,
-                "overall_risk": "ERROR",
-                "daily_schedule_hint": "System error",
-                "final_advice": "Try again"
-            }
-        }
-# -----------------------------
-# /check → INTERACTION DETECTION
-# -----------------------------
-@app.post("/check")
-def check(request: DrugRequest = Body(...)):
-    drugs = request.drugs
-
-    results = []
+def run_interaction_check(drugs: List[str]):
+    """
+    Given a list of normalized drug names, return:
+    - interactions list
+    - risk level string
+    - rich report dict
+    """
+    interactions = []
+    highest_risk = "low"
+    risk_score = 0
 
     for i in range(len(drugs)):
         for j in range(i + 1, len(drugs)):
-            d1 = drugs[i]
-            d2 = drugs[j]
+            d1, d2 = drugs[i], drugs[j]
 
-            for interaction in INTERACTIONS:
-                if (
-                    (d1 == interaction[0] and d2 == interaction[1]) or
-                    (d2 == interaction[0] and d1 == interaction[1])
-                ):
-                    results.append({
-                        "drug1": d1,
-                        "drug2": d2,
-                        "severity": interaction[2],
-                        "effect": interaction[3],
-                        "message": f"Taking {d1} and {d2} together can be dangerous. {interaction[3]}"
-                    })
+            for entry in INTERACTIONS:
+                a, b, severity, effect, recommendation = entry
 
-    if not results:
-        results.append({
-            "severity": "safe",
-            "message": "No dangerous interaction detected. These medicines are generally safe together, but always consult a doctor."
-    })
-
-    return {"interactions": results}
-
-
-@app.post("/check-interactions")
-def check_interactions(req: DrugRequest):
-    drugs = [d.lower() for d in req.drugs]
-
-    found = []
-    report = {
-        "total_drugs": len(drugs),
-        "interactions": [],
-        "risk_level": "low"
-    }
-
-    highest_risk = "low"
-
-    for d1 in drugs:
-        for d2 in drugs:
-            if d1 == d2:
-                continue
-
-            for a, b, severity, message in INTERACTIONS:
                 if (d1 == a and d2 == b) or (d1 == b and d2 == a):
-                    interaction = {
+                    interactions.append({
                         "drug1": d1,
                         "drug2": d2,
                         "severity": severity,
-                        "message": message
-                    }
-                    if interaction not in found:
-                        found.append(interaction)
+                        "effect": effect,
+                        "recommendation": recommendation,
+                        "message": f"{d1.title()} + {d2.title()}: {effect}"
+                    })
 
-                    # track highest risk
                     if severity == "high":
                         highest_risk = "high"
+                        risk_score += 3
                     elif severity == "medium" and highest_risk != "high":
                         highest_risk = "medium"
+                        risk_score += 2
+                    else:
+                        risk_score += 1
+                    break  # one match per pair is enough
 
-    report["interactions"] = found
-    report["risk_level"] = highest_risk
+    # Build overall risk label
+    if risk_score >= 6:
+        overall_risk = "HIGH RISK"
+    elif risk_score >= 3:
+        overall_risk = "MODERATE RISK"
+    elif risk_score > 0:
+        overall_risk = "LOW RISK"
+    else:
+        overall_risk = "NO RISK DETECTED"
+
+    # Build schedule hint
+    if len(drugs) >= 2:
+        high_pairs = [i for i in interactions if i["severity"] == "high"]
+        if high_pairs:
+            p = high_pairs[0]
+            schedule = (
+                f"Do NOT take {p['drug1'].title()} and {p['drug2'].title()} together. "
+                "Space other medicines by at least 2 hours."
+            )
+        else:
+            schedule = (
+                f"Space your medicines by 2–4 hours where possible. "
+                f"Take {drugs[0].title()} in the morning and {drugs[1].title()} with meals if stomach upset occurs."
+            )
+    elif len(drugs) == 1:
+        schedule = f"Take {drugs[0].title()} as prescribed by your doctor."
+    else:
+        schedule = "No medicines to schedule."
+
+    # Build final advice
+    if overall_risk == "HIGH RISK":
+        final_advice = (
+            "⛔ URGENT: One or more combinations in your list are HIGH RISK. "
+            "Do NOT take these medicines together without consulting a doctor immediately. "
+            "These interactions can cause severe internal bleeding, liver failure, or other life-threatening conditions."
+        )
+    elif overall_risk == "MODERATE RISK":
+        final_advice = (
+            "⚠️ CAUTION: Some combinations need care. "
+            "Space medicines by 4–6 hours where advised. "
+            "Monitor for symptoms like nausea, dizziness, or unusual bruising. "
+            "Discuss with your pharmacist or doctor."
+        )
+    elif overall_risk == "LOW RISK":
+        final_advice = (
+            "✅ LOW RISK: Minor interactions found. "
+            "These are generally manageable and commonly prescribed together. "
+            "Follow dosing instructions carefully and consult a doctor if you notice any side effects."
+        )
+    else:
+        final_advice = (
+            "✅ SAFE: No known dangerous interactions found between these medicines. "
+            "Always take medicines as prescribed. Consult your doctor before making any changes."
+        )
+
+    report = {
+        "total_drugs": len(drugs),
+        "drugs_detected": drugs,
+        "interaction_count": len(interactions),
+        "overall_risk": overall_risk,
+        "risk_score": risk_score,
+        "details": interactions,          # full detail list for report page
+        "daily_schedule_hint": schedule,
+        "final_advice": final_advice,
+    }
+
+    return interactions, overall_risk, report
+
+
+# ─────────────────────────────────────────────────────────────
+# ENDPOINTS
+# ─────────────────────────────────────────────────────────────
+
+@app.get("/")
+def health_check():
+    return {
+        "status": "running",
+        "message": "PolyGuard API v3.0 is live 🚀",
+        "endpoints": {
+            "POST /analyze": "Upload image → get detected drugs",
+            "POST /check":   "Send drug list → get interactions + report"
+        }
+    }
+
+
+@app.post("/analyze")
+async def analyze_image(file: UploadFile = File(...)):
+    """
+    Accept an image of a medicine strip.
+    Returns ONLY the list of detected drug names.
+    Frontend accumulates multiple scans and calls /check when done.
+    """
+    try:
+        contents = await file.read()
+
+        if not contents:
+            raise HTTPException(status_code=400, detail="Empty file uploaded")
+
+        # ── OCR ───────────────────────────────────────────
+        extracted_text = ""
+        try:
+            image = Image.open(io.BytesIO(contents))
+
+            # Convert to grayscale for better OCR
+            gray = image.convert("L")
+
+            # pytesseract with improved config
+            custom_config = r"--oem 3 --psm 6"
+            extracted_text = pytesseract.image_to_string(gray, config=custom_config).lower()
+
+        except Exception as ocr_err:
+            print(f"OCR error: {ocr_err}")
+            # Don't crash — return empty result with clear message
+            return {
+                "drugs": [],
+                "message": "OCR processing failed. Try a clearer, well-lit image.",
+                "ocr_text": ""
+            }
+
+        print(f"OCR extracted: {extracted_text[:200]}")
+
+        # ── DRUG DETECTION ────────────────────────────────
+        detected = extract_drugs_from_text(extracted_text)
+
+        print(f"Detected drugs: {detected}")
+
+        return {
+            "drugs": detected,
+            "message": (
+                f"Detected {len(detected)} medicine(s) from image."
+                if detected
+                else "No medicines detected. Try a clearer image with better lighting."
+            ),
+            "ocr_text_preview": extracted_text[:100] if extracted_text else ""
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Analyze endpoint error: {e}")
+        return {
+            "drugs": [],
+            "message": "Analysis failed. Please try again.",
+            "error": str(e)
+        }
+
+
+@app.post("/check")
+def check_interactions(request: DrugListRequest):
+    """
+    Accept a list of drug names.
+    Returns full interaction analysis + rich report.
+    This is the ONLY endpoint that generates reports.
+    """
+    if not request.drugs:
+        raise HTTPException(status_code=400, detail="Drug list cannot be empty")
+
+    # Normalize all drug names to lowercase
+    drugs = [normalize_drug(d) for d in request.drugs]
+    drugs = list(dict.fromkeys(drugs))  # deduplicate preserving order
+
+    if not drugs:
+        raise HTTPException(status_code=400, detail="No valid drug names provided")
+
+    interactions, overall_risk, report = run_interaction_check(drugs)
 
     return {
         "drugs": drugs,
-        "interactions": found,
+        "interactions": interactions,
         "report": report
     }
 
-# -----------------------------
-# /report → SIMPLE PLACEHOLDER
-# -----------------------------
-@app.post("/report")
-def report(data: dict):
-    interactions = data.get("interactions", [])
 
-# extract drugs from interactions
-    drugs = []
-    for item in interactions:
-        if "drug1" in item:
-            drugs.append(item["drug1"])
-        if "drug2" in item:
-            drugs.append(item["drug2"])
+# ─────────────────────────────────────────────────────────────
+# LEGACY ALIASES (keep old endpoints working for any cached FE)
+# ─────────────────────────────────────────────────────────────
 
-
-    drugs = list(set(drugs))
-    interactions = data.get("interactions", [])
-
-    summary = []
-    risk_score = 0
-
-    for item in interactions:
-        if "drug1" in item:
-            severity = item.get("severity", "low")
-
-            # assign score
-            if severity == "high":
-                risk_score += 3
-            elif severity == "medium":
-                risk_score += 2
-            else:
-                risk_score += 1
-
-            # timing suggestion (SAFE LOGIC)
-            # 🔥 ADVANCED TIMING LOGIC
-            if severity == "high":
-                timing = {
-                    "instruction": "Do NOT take these medicines together",
-                    "gap": "Avoid completely or only under doctor supervision",
-                    "food_note": "Take with food if required to reduce side effects",
-                    "monitoring": "Watch for symptoms like bleeding, dizziness, or unusual pain"
-                }
-
-            elif severity == "medium":
-                timing = {
-                    "instruction": "Take medicines at different times",
-                    "gap": "Maintain at least 4–6 hour gap",
-                    "food_note": "Prefer taking after meals to reduce stomach irritation",
-                    "monitoring": "Monitor for mild symptoms like nausea or discomfort"
-                }
-
-            else:
-                timing = {
-                    "instruction": "Medicines can be taken together if prescribed",
-                    "gap": "No strict gap required",
-                    "food_note": "Follow general prescription guidelines",
-                    "monitoring": "No major concerns, but stay alert"
-                }
-
-            summary.append({
-                "pair": f"{item['drug1']} + {item['drug2']}",
-                "severity": severity,
-                "effect": item.get("effect", ""),
-                "timing_advice": timing["instruction"],
-                "recommended_gap": timing["gap"],
-                "food_instruction": timing["food_note"],
-                "monitoring": timing["monitoring"],
-                "simple_explanation": f"{item['drug1']} aur {item['drug2']} ek saath lene se dikkat ho sakti hai. {item.get('effect','')}"
-            })
-
-    if not summary:
-        summary.append({
-            "message": "No dangerous interaction detected. Medicines are generally safe together.",
-            "timing_advice": "Follow doctor's prescription",
-            "simple_explanation": "Yeh medicines generally safe hain saath lene ke liye."
-        })
-
-    # overall risk level
-    if risk_score >= 5:
-        overall = "HIGH RISK"
-    elif risk_score >= 3:
-        overall = "MODERATE RISK"
-    else:
-        overall = "LOW RISK"
-
-    if len(drugs) >= 2:
-        schedule = f"Space {drugs[0]} and {drugs[1]} by 4–6 hours if possible"
-    elif len(drugs) == 1:
-        schedule = f"Take {drugs[0]} as prescribed by doctor"
-    else:
-        schedule = "No medicines detected"
-
-    return {
-        "patient_report": {
-            "total_drugs": len(drugs),
-            "drugs_detected": drugs,
-            "interaction_count": len(summary),
-            "overall_risk": overall,
-            "details": summary,
-            "daily_schedule_hint": schedule,
-            "final_advice": "Always consult a doctor before combining medicines."
-        }
-    }
+@app.post("/check-interactions")
+def check_interactions_alias(request: DrugListRequest):
+    """Alias for /check — backwards compatibility."""
+    return check_interactions(request)
