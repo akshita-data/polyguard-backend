@@ -1,3 +1,5 @@
+import easyocr
+import numpy as np
 from fastapi import FastAPI, UploadFile, File, Body
 from pydantic import BaseModel
 from typing import List
@@ -15,11 +17,48 @@ class DrugRequest(BaseModel):
 
 from fastapi import FastAPI
 
-app = FastAPI()
+reader = None
+
+def get_reader():
+    global reader
+    if reader is None:
+        reader = easyocr.Reader(['en'], gpu=False, verbose=False)
+    return reader
+
+def get_reader():
+    global reader
+    if reader is None:
+        reader = easyocr.Reader(['en'], gpu=False, verbose=False)
+    return reader
 
 @app.get("/")
 def home():
     return {"message": "PolyGuard Backend is Running 🚀"}
+
+
+@app.post("/scan-prescription")
+async def scan_prescription(file: UploadFile = File(...)):
+    image_bytes = await file.read()
+
+    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    img_np = np.array(image)
+
+    reader_instance = get_reader()
+    results = reader_instance.readtext(img_np)
+
+    extracted_text = " ".join([res[1] for res in results if res[2] > 0.4])
+
+    print("OCR TEXT:", extracted_text)
+
+    cleaned_text = re.sub(r'[^a-zA-Z\s]', ' ', extracted_text.lower())
+
+    drugs = extract_drugs_smart(cleaned_text)
+    drugs += map_brands(cleaned_text)
+
+    return {
+        "text": extracted_text,
+        "drugs": list(set(drugs))
+    }
 
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -84,7 +123,7 @@ def extract_drugs_smart(text):
             continue
 
         for word in words:
-            match = get_close_matches(word, [drug], n=1, cutoff=0.7)
+            match = get_close_matches(word, [drug], n=1, cutoff=0.6)
             if match:
                 detected.append(drug)
                 break
@@ -101,8 +140,6 @@ def map_brands(text):
             mapped.append(generic)
 
     return mapped
-
-
 
 
 INTERACTIONS = [
@@ -172,113 +209,7 @@ INTERACTIONS = [
 # -----------------------------
 # FINAL ANALYZE ENDPOINT
 # -----------------------------
-@app.post("/analyze")
-async def analyze(file: UploadFile = File(...)):
-    try:
-        contents = await file.read()
-        filename = file.filename.lower()
 
-        extracted_text = ""
-
-        # ✅ TRY OCR (works locally, safe if fails)
-        try:
-            image = Image.open(io.BytesIO(contents))
-            extracted_text = ""
-        except Exception as e:
-            print("OCR skipped:", e)
-            extracted_text = ""
-            
-        except Exception as e:
-            print("OCR failed:", e)
-
-        # 🔥 CRITICAL: ALWAYS USE FILENAME + OCR
-        text = extracted_text + " " + filename
-
-        print("TEXT USED:", text)
-
-        # ✅ USE YOUR FULL MODEL
-        detected_drugs = extract_drugs_smart(text)
-        detected_drugs += map_brands(text)
-
-        detected_drugs = list(set(detected_drugs))
-
-        # 🔥 IMPROVED FALLBACK USING YOUR OWN DRUG LIST
-        if not detected_drugs:
-            words = re.findall(r"[a-zA-Z]+", text)
-
-            for word in words:
-                match = get_close_matches(word, KNOWN_DRUGS, n=1, cutoff=0.6)
-                if match:
-                    detected_drugs.append(match[0])
-
-        detected_drugs = list(set(detected_drugs))
-
-        # 🚨 STILL NOTHING → HONEST RESPONSE (NO FAKE DATA)
-        if not detected_drugs:
-            return {
-                "drugs": [],
-                "interactions": [],
-                "report": {
-                    "total_drugs": 0,
-                    "drugs_detected": [],
-                    "interaction_count": 0,
-                    "overall_risk": "UNKNOWN",
-                    "daily_schedule_hint": "No medicines detected",
-                    "final_advice": "Try clearer image"
-                }
-            }
-
-        # ✅ FULL INTERACTION ENGINE
-        interactions = []
-
-        for i in range(len(detected_drugs)):
-            for j in range(i + 1, len(detected_drugs)):
-                d1 = detected_drugs[i]
-                d2 = detected_drugs[j]
-
-                for item in INTERACTIONS:
-                    drug1, drug2, severity, effect = item
-
-                    if (
-                        (d1 == drug1 and d2 == drug2) or
-                        (d1 == drug2 and d2 == drug1)
-                    ):
-                        interactions.append({
-                            "drug1": d1,
-                            "drug2": d2,
-                            "severity": severity,
-                            "effect": effect,
-                            "message": f"{d1} + {d2}: {effect}"
-                        })
-
-        return {
-            "drugs": detected_drugs,
-            "interactions": interactions,
-            "report": {
-                "total_drugs": len(detected_drugs),
-                "drugs_detected": detected_drugs,
-                "interaction_count": len(interactions),
-                "overall_risk": "HIGH" if interactions else "LOW",
-                "daily_schedule_hint": "Follow doctor's prescription",
-                "final_advice": "Consult doctor"
-            }
-        }
-
-    except Exception as e:
-        print("Analyze error:", e)
-
-        return {
-            "drugs": [],
-            "interactions": [],
-            "report": {
-                "total_drugs": 0,
-                "drugs_detected": [],
-                "interaction_count": 0,
-                
-                "daily_schedule_hint": "System error",
-                "final_advice": "Try again"
-            }
-        }
 # -----------------------------
 # /check → INTERACTION DETECTION
 # -----------------------------
