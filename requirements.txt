@@ -1,10 +1,10 @@
 fastapi==0.111.0
 uvicorn[standard]==0.30.0
 python-multipart==0.0.9
-pytesseract==0.3.10
-Pillow==10.3.0
 
 easyocr
 torch
 numpy
 opencv-python
+
+Pillow>=11.0.0
