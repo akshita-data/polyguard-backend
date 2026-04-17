@@ -87,7 +87,7 @@ KNOWN_DRUGS = [
     "ambroxol", "chlorpheniramine", "dextromethorphan", "phenylephrine", "menthol",
 
     # Context drugs
-    "alcohol", "vitamin k", "steroids", "clopidogrel", "antibiotics"
+    "alcohol", "vitamin k", "steroids", "clopidogrel", "antibiotics" , "Esoget", "Placida", "Ambulax", "Rozad"
 ]
 
 # -----------------------------
@@ -106,6 +106,22 @@ BRAND_MAP = {
     "fenak": "diclofenac",
     "gesic": "diclofenac",
     "alencuf": "dextromethorphan",
+     
+    "petril plus": "clonazepam",
+    "petril pm": "clonazepam",
+
+    "placida": "alprazolam",
+
+    "ambulax": "ambroxol",
+
+    "esoget": "esomeprazole",
+    "esoget 40": "esomeprazole",
+
+    # Rozad (uncertain → best guess mapping)
+    "rozad": "diclofenac",
+    "rozod": "diclofenac",
+    "rozad d": "diclofenac",
+
 }
 
 # -----------------------------
@@ -203,6 +219,20 @@ INTERACTIONS = [
     ("paracetamol", "ofloxacin", "low", "Generally safe"),
     ("clarithromycin", "paracetamol", "low", "Safe combination"),
     ("ornidazole", "ofloxacin", "medium", "Combined antibiotic usage"),
+    ("clonazepam", "alprazolam", "high", "Severe sedation, dizziness, breathing suppression risk"),
+
+("clonazepam", "ambroxol", "medium", "Increased drowsiness and central nervous system depression"),
+
+("alprazolam", "ambroxol", "medium", "May cause mild sedation and weakness"),
+
+("clonazepam", "esomeprazole", "low", "No major interaction, generally safe"),
+
+("alprazolam", "esomeprazole", "low", "Safe combination with minimal interaction"),
+
+("ambroxol", "esomeprazole", "low", "No significant interaction, safe to use together"),
+("diclofenac", "esomeprazole", "low", "Esomeprazole reduces stomach irritation caused by NSAIDs"),
+
+("nimesulide", "esomeprazole", "low", "Helps protect stomach lining from NSAID damage"),
 ]
 
 
